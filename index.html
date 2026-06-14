@@ -175,9 +175,15 @@ async function connect() {
     log(`選択されたデバイス: ${device.name || '(名前なし)'}`);
     device.addEventListener('gattserverdisconnected', onDisconnected);
 
+    log('GATTサーバーに接続中...');
     const server = await device.gatt.connect();
+    log('GATT接続OK。サービスを取得中...');
+
     const service = await server.getPrimaryService(SERVICE_UUID);
+    log('サービス取得OK。Characteristicを取得中...');
+
     commandChar = await service.getCharacteristic(COMMAND_CHAR_UUID);
+    log('Characteristic取得OK。');
 
     setStatus(`接続済み: ${device.name || 'J-Maelstrom'}`);
     log('接続に成功しました。');
