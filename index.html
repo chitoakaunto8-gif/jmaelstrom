@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J-Maelstrom コントローラー</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 16px;
+    background: #f5f5f7;
+    color: #1d1d1f;
+  }
+  h1 { font-size: 1.3em; margin-bottom: 4px; }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+  button {
+    font-size: 1em;
+    padding: 12px 16px;
+    border-radius: 10px;
+    border: none;
+    background: #007aff;
+    color: #fff;
+    cursor: pointer;
+    margin: 4px;
+  }
+  button:disabled { background: #c7c7cc; }
+  button.danger { background: #ff3b30; }
+  button.level { background: #34c759; min-width: 56px; }
+  #status {
+    font-weight: bold;
+    padding: 8px;
+    border-radius: 8px;
+    background: #eee;
+    margin-bottom: 8px;
+    word-break: break-all;
+  }
+  #log {
+    font-size: 0.8em;
+    color: #555;
+    white-space: pre-wrap;
+    max-height: 160px;
+    overflow-y: auto;
+    background: #fafafa;
+    border-radius: 8px;
+    padding: 8px;
+    border: 1px solid #ddd;
+  }
+  input[type="file"] { width: 100%; }
+  .levels { display: flex; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <h1>J-Maelstrom コントローラー</h1>
+  <div id="status">未接続</div>
+
+  <div class="card">
+    <button id="connectBtn">本体に接続</button>
+    <button id="disconnectBtn" disabled>切断</button>
+  </div>
+
+  <div class="card">
+    <h3>手動テスト</h3>
+    <div class="levels">
+      <button class="level" data-level="0">停止</button>
+      <button class="level" data-level="1">Lv1</button>
+      <button class="level" data-level="2">Lv2</button>
+      <button class="level" data-level="3">Lv3</button>
+      <button class="level" data-level="4">Lv4</button>
+      <button class="level" data-level="5">Lv5</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>CSV再生</h3>
+    <p style="font-size:0.85em;color:#666;">
+      CSV形式: 1行ごとに <code>time_sec,level</code><br>
+      (例: <code>0,1</code> / <code>0.5,2</code> ... level は 0〜5)
+    </p>
+    <input type="file" id="csvFile" accept=".csv,text/csv">
+    <div style="margin-top:8px;">
+      <button id="playBtn" disabled>再生</button>
+      <button id="stopBtn" class="danger" disabled>停止</button>
+    </div>
+    <p id="playStatus" style="font-size:0.85em;color:#666;"></p>
+  </div>
+
+  <div class="card">
+    <h3>ログ</h3>
+    <div id="log"></div>
+  </div>
+
+<script>
+const SERVICE_UUID = 0xFFA0;
+const COMMAND_CHAR_UUID = 0xFFA1;
+
+// レベル -> 送信する16進数コマンド
+const LEVEL_COMMANDS = {
+  0: 'A00600000001',
+  1: 'A00601000B01',
+  2: 'A00601000C01',
+  3: 'A00601000D01',
+  4: 'A00601000E01',
+  5: 'A00601000F01'
+};
+
+let device = null;
+let commandChar = null;
+let timeline = [];
+let playTimer = null;
+
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
+const playStatusEl = document.getElementById('playStatus');
+
+function log(msg) {
+  const time = new Date().toLocaleTimeString();
+  logEl.textContent += `[${time}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+async function connect() {
+  try {
+    if (!navigator.bluetooth) {
+      log('エラー: このブラウザはWeb Bluetoothに対応していません。');
+      setStatus('未対応のブラウザです');
+      return;
+    }
+    log('デバイスを検索中...');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }],
+      optionalServices: [SERVICE_UUID]
+    });
+    log(`選択されたデバイス: ${device.name || '(名前なし)'}`);
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    commandChar = await service.getCharacteristic(COMMAND_CHAR_UUID);
+
+    setStatus(`接続済み: ${device.name || 'J-Maelstrom'}`);
+    log('接続に成功しました。');
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+    playBtn.disabled = (timeline.length === 0);
+  } catch (err) {
+    log('接続エラー: ' + err.message);
+    setStatus('接続に失敗しました');
+  }
+}
+
+function onDisconnected() {
+  setStatus('未接続');
+  log('デバイスが切断されました。');
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  playBtn.disabled = true;
+  stopBtn.disabled = true;
+  stopPlayback();
+}
+
+function disconnect() {
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+  }
+}
+
+async function sendLevel(level) {
+  if (!commandChar) {
+    log('未接続のため送信できません。');
+    return;
+  }
+  const hex = LEVEL_COMMANDS[level];
+  if (!hex) {
+    log(`不明なレベルです: ${level}`);
+    return;
+  }
+  try {
+    await commandChar.writeValueWithoutResponse(hexToBytes(hex));
+    log(`レベル${level}を送信 (${hex})`);
+  } catch (err) {
+    log('送信エラー: ' + err.message);
+  }
+}
+
+// 手動テストボタン
+document.querySelectorAll('.level').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const level = parseInt(btn.dataset.level, 10);
+    sendLevel(level);
+  });
+});
+
+connectBtn.addEventListener('click', connect);
+disconnectBtn.addEventListener('click', disconnect);
+
+// CSV読み込み
+document.getElementById('csvFile').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      timeline = parseCSV(ev.target.result);
+      log(`CSVを読み込みました。${timeline.length}件のステップ。`);
+      playStatusEl.textContent = `${timeline.length}件のステップを読み込み済み`;
+      if (commandChar) playBtn.disabled = false;
+    } catch (err) {
+      log('CSV解析エラー: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  const result = [];
+  for (const line of lines) {
+    const parts = line.split(',').map(p => p.trim());
+    if (parts.length < 2) continue;
+    const time = parseFloat(parts[0]);
+    const level = parseInt(parts[1], 10);
+    if (isNaN(time) || isNaN(level)) continue; // ヘッダー行などはスキップ
+    result.push({ time, level });
+  }
+  result.sort((a, b) => a.time - b.time);
+  return result;
+}
+
+// 再生
+function startPlayback() {
+  if (timeline.length === 0) return;
+  if (!commandChar) {
+    log('再生するには本体に接続してください。');
+    return;
+  }
+  playBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  const startTime = performance.now();
+  let index = 0;
+
+  function tick() {
+    const elapsedSec = (performance.now() - startTime) / 1000;
+
+    // 現在時刻以下のステップを送信(同タイミングが複数あれば最後の1つだけ)
+    let sentLevel = null;
+    while (index < timeline.length && timeline[index].time <= elapsedSec) {
+      sentLevel = timeline[index].level;
+      index++;
+    }
+    if (sentLevel !== null) {
+      sendLevel(sentLevel);
+    }
+
+    playStatusEl.textContent = `再生中... ${elapsedSec.toFixed(1)}秒経過 (${index}/${timeline.length})`;
+
+    if (index >= timeline.length) {
+      log('再生が終了しました。');
+      playStatusEl.textContent = '再生終了';
+      sendLevel(0); // 安全のため終了時は停止
+      stopPlayback();
+      return;
+    }
+    playTimer = setTimeout(tick, 100); // 100ms間隔でチェック
+  }
+  tick();
+}
+
+function stopPlayback() {
+  if (playTimer) {
+    clearTimeout(playTimer);
+    playTimer = null;
+  }
+  playBtn.disabled = (timeline.length === 0 || !commandChar);
+  stopBtn.disabled = true;
+}
+
+playBtn.addEventListener('click', startPlayback);
+stopBtn.addEventListener('click', () => {
+  stopPlayback();
+  sendLevel(0);
+  playStatusEl.textContent = '停止しました';
+});
+</script>
+</body>
+</html>
