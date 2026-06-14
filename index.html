@@ -151,7 +151,7 @@ async function connect() {
     }
     log('デバイスを検索中...');
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SERVICE_UUID] }],
+      acceptAllDevices: true,
       optionalServices: [SERVICE_UUID]
     });
     log(`選択されたデバイス: ${device.name || '(名前なし)'}`);
