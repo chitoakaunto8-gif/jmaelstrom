@@ -3,267 +3,57 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>J-Maelstrom CSVプレーヤー</title>
+<title>BLE接続テスト</title>
 <style>
-body { background:#16181d; color:#e8e9ed; font-family:sans-serif; padding:16px; margin:0; }
-.card { background:#1f2228; border:1px solid #2c2f37; border-radius:12px; padding:16px; margin-bottom:14px; }
-h1 { font-size:18px; margin:0 0 4px; }
-.sub { color:#8b8f99; font-size:13px; margin:0 0 16px; line-height:1.6; }
-h2 { font-size:13px; color:#8b8f99; text-transform:uppercase; margin:0 0 12px; }
-button { font-size:16px; font-weight:600; border:none; border-radius:12px; padding:14px; width:100%; margin-bottom:8px; cursor:pointer; }
-.primary { background:#ff6b4a; color:#1a1a1a; }
-.secondary { background:#2a2d35; color:#fff; }
-.row { display:flex; gap:8px; }
-.row button { flex:1; }
-.level { text-align:center; font-size:48px; font-weight:800; color:#ff6b4a; }
-.log { font-family:monospace; font-size:11px; background:#14161a; padding:10px; border-radius:8px; max-height:160px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
-input[type=file] { color:#8b8f99; width:100%; }
-.progress { height:6px; background:#2a2d35; border-radius:3px; overflow:hidden; margin:10px 0; }
-.progress-fill { height:100%; width:0%; background:#ff6b4a; }
-.time-row { display:flex; justify-content:space-between; font-size:12px; color:#8b8f99; }
+body { background:#111; color:#eee; font-family:sans-serif; padding:20px; font-size:18px; }
+button { font-size:20px; padding:20px; width:100%; margin-bottom:16px; border-radius:10px; border:none; background:#ff6b4a; color:#111; font-weight:bold; }
+#out { background:#000; color:#0f0; padding:12px; border-radius:8px; white-space:pre-wrap; word-break:break-all; font-family:monospace; font-size:14px; min-height:200px; }
 </style>
 </head>
 <body>
-<h1>J-Maelstrom CSVプレーヤー</h1>
-<p class="sub">CSVタイムラインを読み込み、Bluetoothで本体にレベル変更コマンドを送信します。<br>対応形式: 時間(秒), レベル(0〜5) ※先頭行はヘッダー行</p>
-
-<div class="card">
-<h2>接続</h2>
-<div id="statusText">未接続</div>
-<div class="row" style="margin-top:10px;">
-<button class="primary" id="btnConnect">本体に接続</button>
-<button class="secondary" id="btnDisconnect" disabled>切断</button>
-</div>
-</div>
-
-<div class="card">
-<h2>CSVファイル</h2>
-<input type="file" id="fileInput" accept=".csv,text/csv">
-<div id="fileInfo">ファイルが選択されていません</div>
-</div>
-
-<div class="card">
-<div class="level" id="levelNumber">–</div>
-<div class="progress"><div class="progress-fill" id="progressFill"></div></div>
-<div class="time-row"><span id="timeNow">0:00</span><span id="timeTotal">0:00</span></div>
-<div class="row" style="margin-top:10px;">
-<button class="primary" id="btnPlay" disabled>再生</button>
-<button class="secondary" id="btnStop" disabled>停止</button>
-</div>
-</div>
-
-<div class="card">
-<h2>動作テスト(手動)</h2>
-<div class="row" id="manualButtons">
-<button class="secondary" data-level="0">停止</button>
-<button class="secondary" data-level="1">1</button>
-<button class="secondary" data-level="2">2</button>
-<button class="secondary" data-level="3">3</button>
-<button class="secondary" data-level="4">4</button>
-<button class="secondary" data-level="5">5</button>
-</div>
-</div>
-
-<div class="card">
-<h2>ログ</h2>
-<div class="log" id="log">準備完了。「本体に接続」を押してください。</div>
-</div>
+<h1>BLE接続テスト</h1>
+<button id="btn1">1. Bluetooth対応チェック</button>
+<button id="btn2">2. デバイス選択を呼び出す</button>
+<div id="out">ここに結果が表示されます</div>
 
 <script>
-const SERVICE_UUID = 0xFFA0;
-const WRITE_CHAR_UUID = 0xFFA1;
-const LEVEL_COMMANDS = {
-  0: "A00600000001",
-  1: "A00601000B01",
-  2: "A00601000C01",
-  3: "A00601000D01",
-  4: "A00601000E01",
-  5: "A00601000F01",
-};
-let device = null;
-let writeChar = null;
-let timeline = null;
-let playTimer = null;
-let playStartTs = 0;
-let playIndex = 0;
-
-const $ = (id) => document.getElementById(id);
-const statusText = $("statusText");
-const logEl = $("log");
-const btnConnect = $("btnConnect");
-const btnDisconnect = $("btnDisconnect");
-const btnPlay = $("btnPlay");
-const btnStop = $("btnStop");
-const fileInput = $("fileInput");
-const fileInfo = $("fileInfo");
-const levelNumber = $("levelNumber");
-const progressFill = $("progressFill");
-const timeNow = $("timeNow");
-const timeTotal = $("timeTotal");
-
-function log(msg) {
-  const line = document.createElement("div");
-  line.textContent = "[" + new Date().toLocaleTimeString("ja-JP",{hour12:false}) + "] " + msg;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+const out = document.getElementById('out');
+function p(msg) {
+  out.textContent += msg + "\n";
 }
 
-function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length/2);
-  for (let i=0;i<hex.length;i+=2) bytes[i/2]=parseInt(hex.substr(i,2),16);
-  return bytes;
-}
-
-function formatTime(sec) {
-  sec = Math.max(0, Math.floor(sec));
-  const m = Math.floor(sec/60);
-  const s = sec%60;
-  return m + ":" + String(s).padStart(2,"0");
-}
-
-async function connect() {
-  if (!navigator.bluetooth) { log("Web Bluetooth未対応です。"); return; }
-  try {
-    statusText.textContent = "デバイスを選択中…";
-    log("デバイス選択ダイアログを表示します(一覧から J-Maelstrom を選んでください)…");
-    const dev = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: [SERVICE_UUID]
+document.getElementById('btn1').addEventListener('click', () => {
+  out.textContent = "";
+  p("navigator.bluetooth: " + (navigator.bluetooth ? "あり" : "なし"));
+  if (navigator.bluetooth) {
+    p("getAvailability呼び出し中...");
+    navigator.bluetooth.getAvailability().then(a => {
+      p("getAvailability結果: " + a);
+    }).catch(e => {
+      p("getAvailabilityエラー: " + e.name + " - " + e.message);
     });
-    log("選択: " + dev.name);
-    if (!dev.name || !dev.name.startsWith("J-Maelstrom")) {
-      log("注意: 選択されたのは J-Maelstrom ではありません。正しいデバイスを選び直してください。");
-    }
-    device = dev;
-    device.addEventListener("gattserverdisconnected", onDisconnected);
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE_UUID);
-    writeChar = await service.getCharacteristic(WRITE_CHAR_UUID);
-    statusText.textContent = "接続済み: " + device.name;
-    log("接続成功", "ok");
-    btnConnect.disabled = true;
-    btnDisconnect.disabled = false;
-    updatePlayButton();
-  } catch(e) {
-    log("エラー: " + (e && e.message ? e.message : e));
-    statusText.textContent = "接続失敗";
   }
-}
-
-function onDisconnected() {
-  statusText.textContent = "未接続";
-  log("切断されました");
-  writeChar = null;
-  btnConnect.disabled = false;
-  btnDisconnect.disabled = true;
-  stopPlayback();
-  updatePlayButton();
-}
-
-function disconnect() {
-  if (device && device.gatt.connected) device.gatt.disconnect();
-}
-
-async function sendLevel(level) {
-  if (!writeChar) { log("未接続です"); return; }
-  const hex = LEVEL_COMMANDS[level];
-  try {
-    await writeChar.writeValueWithoutResponse(hexToBytes(hex));
-    log("送信: レベル " + level);
-  } catch(e) { log("送信エラー: " + (e && e.message ? e.message : e)); }
-}
-
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
-  if (lines.length===0) return [];
-  const result = [];
-  let start = 0;
-  const firstCols = lines[0].split(",");
-  if (isNaN(parseFloat(firstCols[0]))) start = 1;
-  for (let i=start;i<lines.length;i++) {
-    const cols = lines[i].split(",");
-    if (cols.length<2) continue;
-    const time = parseFloat(cols[0]);
-    const level = parseInt(cols[1],10);
-    if (isNaN(time)||isNaN(level)) continue;
-    result.push({time, level: Math.max(0,Math.min(5,level))});
-  }
-  result.sort((a,b)=>a.time-b.time);
-  return result;
-}
-
-fileInput.addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const text = await file.text();
-  timeline = parseCsv(text);
-  if (timeline.length===0) {
-    fileInfo.textContent = "読み込み失敗";
-    timeline = null;
-  } else {
-    const total = timeline[timeline.length-1].time;
-    fileInfo.textContent = file.name + " / " + timeline.length + "ステップ / " + total + "秒";
-    timeTotal.textContent = formatTime(total);
-  }
-  updatePlayButton();
+  p("location.protocol: " + location.protocol);
+  p("location.href: " + location.href);
+  p("isSecureContext: " + window.isSecureContext);
 });
 
-function updatePlayButton() {
-  btnPlay.disabled = !(writeChar && timeline);
-}
-
-function startPlayback() {
-  if (!timeline || !writeChar) return;
-  playIndex = 0;
-  playStartTs = performance.now();
-  const total = timeline[timeline.length-1].time;
-  log("再生開始");
-  btnPlay.disabled = true;
-  btnStop.disabled = false;
-  playTimer = setInterval(() => {
-    const elapsed = (performance.now()-playStartTs)/1000;
-    while (playIndex<timeline.length && timeline[playIndex].time<=elapsed) {
-      const step = timeline[playIndex];
-      sendLevel(step.level);
-      levelNumber.textContent = step.level;
-      playIndex++;
-    }
-    const pct = Math.min(100, (elapsed/total)*100);
-    progressFill.style.width = pct + "%";
-    timeNow.textContent = formatTime(elapsed);
-    if (playIndex>=timeline.length && elapsed>=total) {
-      log("再生終了");
-      sendLevel(0);
-      levelNumber.textContent = "0";
-      stopPlayback();
-    }
-  }, 100);
-}
-
-function stopPlayback() {
-  if (playTimer) { clearInterval(playTimer); playTimer=null; }
-  btnPlay.disabled = !(writeChar && timeline);
-  btnStop.disabled = true;
-}
-
-function stopAndCommand() {
-  stopPlayback();
-  sendLevel(0);
-  levelNumber.textContent = "0";
-  progressFill.style.width = "0%";
-  timeNow.textContent = "0:00";
-}
-
-btnConnect.addEventListener("click", connect);
-btnDisconnect.addEventListener("click", disconnect);
-btnPlay.addEventListener("click", startPlayback);
-btnStop.addEventListener("click", stopAndCommand);
-document.getElementById("manualButtons").addEventListener("click", (e) => {
-  const btn = e.target.closest("button");
-  if (!btn) return;
-  const level = parseInt(btn.dataset.level,10);
-  sendLevel(level);
-  levelNumber.textContent = level;
+document.getElementById('btn2').addEventListener('click', () => {
+  out.textContent = "";
+  p("requestDevice呼び出し中...");
+  navigator.bluetooth.requestDevice({
+    acceptAllDevices: true
+  }).then(device => {
+    p("成功!");
+    p("デバイス名: " + device.name);
+    p("デバイスID: " + device.id);
+  }).catch(e => {
+    p("エラー発生");
+    p("名前(name): " + e.name);
+    p("メッセージ(message): " + e.message);
+    p("文字列化: " + String(e));
+    p("JSON化: " + JSON.stringify(e, Object.getOwnPropertyNames(e)));
+  });
 });
 </script>
 </body>
